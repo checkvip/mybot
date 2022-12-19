@@ -2,10 +2,9 @@ import requests
 import datetime
 import time
 import json
-import httpx
 from datetime import timedelta
 from datetime import timezone
-from .utils import _ConfigFile, myck, logger
+from .utils import CONFIG_SH_FILE, get_cks, AUTH_FILE, QL,logger
 SHA_TZ = timezone(
     timedelta(hours=8),
     name='Asia/Shanghai',
@@ -17,7 +16,7 @@ session.keep_alive = False
 url = "https://api.m.jd.com/api"
 
 
-def getbody(page):
+def gen_body(page):
     body = {
         "beginDate": datetime.datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(SHA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "endDate": datetime.datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(SHA_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -27,8 +26,8 @@ def getbody(page):
     return body
 
 
-def getparams(page):
-    body = getbody(page)
+def gen_params(page):
+    body = gen_body(page)
     params = {
         "functionId": "jposTradeQuery",
         "appid": "swat_miniprogram",
@@ -41,99 +40,90 @@ def getparams(page):
     }
     return params
 
-
-async def getbeans(ck, client):
-    logger.info('即将从京东获取京豆数据')
+def get_beans_7days(ck):
     try:
-        _7day = True
+        day_7 = True
         page = 0
-        headers = {
-            "Host": "api.m.jd.com",
-            "Connection": "keep-alive",
-            "charset": "utf-8",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; MI 9 Build/QKQ1.190825.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/78.0.3904.62 XWEB/2797 MMWEBSDK/201201 Mobile Safari/537.36 MMWEBID/7986 MicroMessenger/8.0.1840(0x2800003B) Process/appbrand4 WeChat/arm64 Weixin NetType/4G Language/zh_CN ABI/arm64 MiniProgramEnv/android",
-            "Content-Type": "application/x-www-form-urlencoded;",
-            "Accept-Encoding": "gzip, compress, deflate, br",
-            "Cookie": ck,
-            "Referer": "https://servicewechat.com/wxa5bf5ee667d91626/141/page-frame.html",
+        headers = {            
+            "Content-Type": "application/x-www-form-urlencoded;",           
+            "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-G9880) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Mobile Safari/537.36 EdgA/106.0.1370.47",
+            "Cookie": ck
         }
-        _7days = []
+        days = []
         for i in range(0, 7):
-            _7days.append(
+            days.append(
                 (datetime.date.today() - datetime.timedelta(days=i)).strftime("%Y-%m-%d"))
-        beansin = {key: 0 for key in _7days}
-        beansout = {key: 0 for key in _7days}
-        while _7day:
-            page = page + 1
-            resp = await client.get(url, params=getparams(page), headers=headers, timeout=100)
-            resp = resp.text
+        beans_in = {key: 0 for key in days}
+        beans_out = {key: 0 for key in days}
+        
+        while day_7:
+            page = page + 1            
+            url="https://bean.m.jd.com/beanDetail/detail.json?page="+str(page)
+            resp = session.get(url,headers=headers, timeout=100).text           
+            amount=0
             res = json.loads(resp)
-            if res['resultCode'] == 0:
-                for i in res['data']['list']:
-                    for date in _7days:
-                        if str(date) in i['createDate'] and i['amount'] > 0:
-                            beansin[str(date)] = beansin[str(
-                                date)] + i['amount']
+            if res['code'] == "0":
+                for i in res['jingDetailList']:
+                    amount=int(i['amount'])
+                    for date in days:                        
+                        if str(date) in i['date'] and amount > 0:
+                            beans_in[str(date)] = beans_in[str(
+                                date)] + amount
                             break
-                        elif str(date) in i['createDate'] and i['amount'] < 0:
-                            beansout[str(date)] = beansout[str(
-                                date)] + i['amount']
+                        elif str(date) in i['date'] and amount < 0:
+                            beans_out[str(date)] = beans_out[str(
+                                date)] + amount
                             break
-                    if i['createDate'].split(' ')[0] not in str(_7days):
-                        _7day = False
+                    if i['date'].split(' ')[0] not in str(days):                                                
+                        day_7 = False
             else:
-                logger.info(f'未能从京东获取到京豆数据，发生了错误{str(res)}')
                 return {'code': 400, 'data': res}
-        logger.info(f'获取到京豆数据')
-        return {'code': 200, 'data': [beansin, beansout, _7days]}
+        return {'code': 200, 'data': [beans_in, beans_out, days]}
     except Exception as e:
-        logger.info(f'未能从京东获取到京豆数据，发生了错误{str(e)}')
+        logger.error(str(e))
         return {'code': 400, 'data': str(e)}
 
-
-async def getTotal(ck, client):
+def get_total_beans(ck):
     try:
-        logger.info('即将从京东获取京豆总量')
         headers = {
-            "Host": "wxapp.m.jd.com",
+            "Accept": "application/json,text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "zh-cn",
             "Connection": "keep-alive",
-            "charset": "utf-8",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; MI 9 Build/QKQ1.190825.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/78.0.3904.62 XWEB/2797 MMWEBSDK/201201 Mobile Safari/537.36 MMWEBID/7986 MicroMessenger/8.0.1840(0x2800003B) Process/appbrand4 WeChat/arm64 Weixin NetType/4G Language/zh_CN ABI/arm64 MiniProgramEnv/android",
-            "Content-Type": "application/x-www-form-urlencoded;",
-            "Accept-Encoding": "gzip, compress, deflate, br",
             "Cookie": ck,
+            "Referer": "https://wqs.jd.com/my/jingdou/my.shtml?sceneval=2",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-G9880) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Mobile Safari/537.36 EdgA/106.0.1370.47"
         }
-        jurl = "https://wxapp.m.jd.com/kwxhome/myJd/home.json"
-        resp = await client.get(jurl, headers=headers, timeout=100)
-        resp = resp.text
-        res = json.loads(resp)
-        logger.info(f'从京东获取京豆总量{res["user"]["jingBean"]}')
-        return res['user']['jingBean']
+        jurl = "https://wq.jd.com/user/info/QueryJDUserInfo?sceneval=2"
+        resp = session.get(jurl, headers=headers, timeout=100).text
+        res = json.loads(resp)       
+        return res['base']['jdNum'],res['base']['nickname'],'http://storage.360buyimg.com/i.imageUpload/b6adc6e4bbaa31363437393935323238323435_mid.jpg'
     except Exception as e:
         logger.error(str(e))
 
-
-async def get_bean_data(i):
+def get_bean_data(i):
     try:
-        async with httpx.AsyncClient(verify=False) as client:
-            logger.info('开始执行京豆收支')
-            cookies = myck(_ConfigFile)
-            if cookies:
-                logger.info(f'共获取到{len(cookies)},将获取第{i}个账户京豆数据')
-                ck = cookies[i-1]
-                beans_res = await getbeans(ck, client)
-                beantotal = await getTotal(ck, client)
-                if beans_res['code'] != 200:
-                    return beans_res
-                else:
-                    beansin, beansout = [], []
-                    beanstotal = [int(beantotal), ]
-                    for i in beans_res['data'][0]:
-                        beantotal = int(
-                            beantotal) - int(beans_res['data'][0][i]) - int(beans_res['data'][1][i])
-                        beansin.append(int(beans_res['data'][0][i]))
-                        beansout.append(int(str(beans_res['data'][1][i]).replace('-', '')))
-                        beanstotal.append(beantotal)
-                return {'code': 200, 'data': [beansin[::-1], beansout[::-1], beanstotal[::-1], beans_res['data'][2][::-1]]}
+        if QL:
+            ckfile = AUTH_FILE
+        else:
+            ckfile = CONFIG_SH_FILE
+        cookies = get_cks(ckfile)
+        if cookies:
+            ck = cookies[i-1]
+            beans_res = get_beans_7days(ck)
+            beantotal,nickname,pic = get_total_beans(ck)
+            if beans_res['code'] != 200:
+                return beans_res
+            else:
+                beans_in, beans_out = [], []
+                beanstotal = [int(beantotal), ]
+                for i in beans_res['data'][0]:
+                    beantotal = int(
+                        beantotal) - int(beans_res['data'][0][i]) - int(beans_res['data'][1][i])
+                    beans_in.append(int(beans_res['data'][0][i]))
+                    beans_out.append(int(str(beans_res['data'][1][i]).replace('-', '')))
+                    beanstotal.append(beantotal)
+            return {'code': 200, 'data': [beans_in[::-1], beans_out[::-1], beanstotal[::-1], beans_res['data'][2][::-1],nickname,pic]}
     except Exception as e:
         logger.error(str(e))
